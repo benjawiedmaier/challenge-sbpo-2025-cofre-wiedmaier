@@ -10,8 +10,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-import ilog.concert.*;
-import ilog.cplex.IloCplex;
+import com.google.ortools.linearsolver.MPSolver;
+import com.google.ortools.linearsolver.MPVariable;
+import com.google.ortools.linearsolver.MPObjective;
+import com.google.ortools.linearsolver.MPConstraint;
 
 
 public class ChallengeSolver {
@@ -36,81 +38,90 @@ public class ChallengeSolver {
         int nOrders = orders.size();
         int nAisles = aisles.size();
 
-        try {
-            IloCplex cplex = new IloCplex();
-            cplex.setOut(null); // desactiva la salida para mejorar el rendimiento
+        MPSolver solver = MPSolver.createSolver("CBC");
+        if (solver == null) return null;
 
-            // Variables
-            IloNumVar[] x = cplex.boolVarArray(nOrders);
-            IloNumVar[] y = cplex.boolVarArray(nAisles);
-            IloNumVar totalUnits = cplex.intVar(waveSizeLB, waveSizeUB, "totalUnits");
-            IloNumVar[] orderUnitSum = new IloNumVar[nOrders];
+        MPVariable[] x = new MPVariable[nOrders];
+        for (int o = 0; o < nOrders; o++) {
+            x[o] = solver.makeBoolVar("x_o_" + o);
+        }
 
+        MPVariable[] y = new MPVariable[nAisles];
+        for (int a = 0; a < nAisles; a++) {
+            y[a] = solver.makeBoolVar("y_a_" + a);
+        }
+
+        MPVariable totalUnits = solver.makeIntVar(waveSizeLB, waveSizeUB, "total_units");
+
+        MPVariable[] orderUnitSum = new MPVariable[nOrders];
+        for (int o = 0; o < nOrders; o++) {
+            int sum = orders.get(o).values().stream().mapToInt(Integer::intValue).sum();
+            orderUnitSum[o] = solver.makeIntVar(0, waveSizeUB, "units_o_" + o);
+            MPConstraint c = solver.makeConstraint(0.0, 0.0, "link_units_o_" + o);
+            c.setCoefficient(orderUnitSum[o], 1.0);
+            c.setCoefficient(x[o], -sum);
+        }
+
+        MPConstraint totalUnitsConstraint = solver.makeConstraint(0.0, 0.0, "total_units_def");
+        totalUnitsConstraint.setCoefficient(totalUnits, 1.0);
+        for (MPVariable v : orderUnitSum) {
+            totalUnitsConstraint.setCoefficient(v, -1.0);
+        }
+
+        for (int i = 0; i < nItems; i++) {
+            MPConstraint itemConstraint = solver.makeConstraint(0.0, Double.POSITIVE_INFINITY, "item_req_supply_" + i);
             for (int o = 0; o < nOrders; o++) {
-                int sum = orders.get(o).values().stream().mapToInt(Integer::intValue).sum();
-                orderUnitSum[o] = cplex.intVar(0, waveSizeUB, "units_o_" + o);
-                cplex.addEq(orderUnitSum[o], cplex.prod(sum, x[o]));
+                int units = orders.get(o).getOrDefault(i, 0);
+                if (units > 0) {
+                    itemConstraint.setCoefficient(x[o], units);
+                }
+            }
+            for (int a = 0; a < nAisles; a++) {
+                int capacity = aisles.get(a).getOrDefault(i, 0);
+                if (capacity > 0) {
+                    itemConstraint.setCoefficient(y[a], -capacity);
+                }
+            }
+        }
+
+        double lambda = 0;
+        double epsilon = 1e-4;
+        double bestObj = 0;
+        Set<Integer> bestOrders = new HashSet<>();
+        Set<Integer> bestAisles = new HashSet<>();
+
+        while (getRemainingTime(stopWatch) > 2) {
+            MPObjective objective = solver.objective();
+            objective.setMaximization();
+            objective.setCoefficient(totalUnits, 1.0);
+            for (int a = 0; a < nAisles; a++) {
+                objective.setCoefficient(y[a], -lambda);
             }
 
-            cplex.addEq(totalUnits, cplex.sum(orderUnitSum));
+            solver.setTimeLimit((int)Math.min(getRemainingTime(stopWatch) * 1000, 10000));
+            final MPSolver.ResultStatus resultStatus = solver.solve();
 
-            // Restricciones de capacidad por ítem
-            for (int i = 0; i < nItems; i++) {
-                IloLinearNumExpr expr = cplex.linearNumExpr();
-                for (int o = 0; o < nOrders; o++) {
-                    int units = orders.get(o).getOrDefault(i, 0);
-                    if (units > 0) expr.addTerm(units, x[o]);
-                }
-                for (int a = 0; a < nAisles; a++) {
-                    int cap = aisles.get(a).getOrDefault(i, 0);
-                    if (cap > 0) expr.addTerm(-cap, y[a]);
-                }
-                cplex.addGe(expr, 0);
-            }
+            if (resultStatus == MPSolver.ResultStatus.OPTIMAL || resultStatus == MPSolver.ResultStatus.FEASIBLE) {
+                double units = totalUnits.solutionValue();
+                double aislesUsed = Arrays.stream(y).filter(var -> var.solutionValue() > 0.5).count();
+                double ratio = units / aislesUsed;
 
-            // Optimización iterativa
-            double lambda = 0;
-            double epsilon = 1e-4;
-            double bestObj = 0;
-            Set<Integer> bestOrders = new HashSet<>();
-            Set<Integer> bestAisles = new HashSet<>();
-
-            while (getRemainingTime(stopWatch) > 2) {
-                IloLinearNumExpr objExpr = cplex.linearNumExpr();
-                objExpr.addTerm(1.0, totalUnits);
-                for (int a = 0; a < nAisles; a++) {
-                    objExpr.addTerm(-lambda, y[a]);
-                }
-                cplex.addMaximize(objExpr);
-
-                cplex.setParam(IloCplex.Param.TimeLimit, Math.min(getRemainingTime(stopWatch), 10));
-
-                if (cplex.solve()) {
-                    double units = cplex.getValue(totalUnits);
-                    long aislesUsed = Arrays.stream(y).filter(var -> cplex.getValue(var) > 0.5).count();
-                    double ratio = units / aislesUsed;
-
-                    if (ratio - bestObj > epsilon) {
-                        bestObj = ratio;
-                        lambda = ratio;
-                        bestOrders.clear();
-                        bestAisles.clear();
-                        for (int o = 0; o < nOrders; o++) if (cplex.getValue(x[o]) > 0.5) bestOrders.add(o);
-                        for (int a = 0; a < nAisles; a++) if (cplex.getValue(y[a]) > 0.5) bestAisles.add(a);
-                    } else {
-                        break;
-                    }
+                if (ratio - bestObj > epsilon) {
+                    bestObj = ratio;
+                    lambda = ratio;
+                    bestOrders.clear();
+                    bestAisles.clear();
+                    for (int o = 0; o < nOrders; o++) if (x[o].solutionValue() > 0.5) bestOrders.add(o);
+                    for (int a = 0; a < nAisles; a++) if (y[a].solutionValue() > 0.5) bestAisles.add(a);
                 } else {
                     break;
                 }
-                cplex.clearModel(); // importante: limpia para evitar acumulación en siguientes iteraciones
+            } else {
+                break;
             }
-
-            return new ChallengeSolution(bestOrders, bestAisles);
-        } catch (IloException e) {
-            e.printStackTrace();
-            return null;
         }
+
+        return new ChallengeSolution(bestOrders, bestAisles);
     }
     protected long getRemainingTime(StopWatch stopWatch) {
         return Math.max(
