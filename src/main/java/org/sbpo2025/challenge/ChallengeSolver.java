@@ -9,11 +9,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.*;
 
 import com.google.ortools.linearsolver.MPSolver;
+import com.google.ortools.linearsolver.MPSolver.ResultStatus;
 import com.google.ortools.linearsolver.MPVariable;
-import com.google.ortools.linearsolver.MPObjective;
 import com.google.ortools.linearsolver.MPConstraint;
+import com.google.ortools.linearsolver.MPObjective;
 
 
 public class ChallengeSolver {
@@ -37,93 +39,93 @@ public class ChallengeSolver {
     }
 
     public ChallengeSolution solve(StopWatch stopWatch) {
-        int nOrders = orders.size();
-        int nAisles = aisles.size();
-
-        MPSolver solver = MPSolver.createSolver("CBC");
-        if (solver == null) return null;
-
-        MPVariable[] x = new MPVariable[nOrders];
-        for (int o = 0; o < nOrders; o++) {
-            x[o] = solver.makeBoolVar("x_o_" + o);
+        // 1. Crear el solver MIP (CBC)
+        MPSolver solver = MPSolver.createSolver("CBC_MIXED_INTEGER_PROGRAMMING");
+        if (solver == null) {
+            throw new IllegalStateException("No se pudo crear el solver CBC");
         }
 
-        MPVariable[] y = new MPVariable[nAisles];
-        for (int a = 0; a < nAisles; a++) {
+        int numOrders = orders.size();
+        int numAisles = aisles.size();
+
+        // 2. Variables binarias
+        MPVariable[] x = new MPVariable[numOrders];      // x[o] = 1 si tomo la orden o
+        MPVariable[] y = new MPVariable[numAisles];      // y[a] = 1 si visito el pasillo a
+        for (int o = 0; o < numOrders; o++) {
+            x[o] = solver.makeBoolVar("x_o_" + o);
+        }
+        for (int a = 0; a < numAisles; a++) {
             y[a] = solver.makeBoolVar("y_a_" + a);
         }
 
-        MPVariable totalUnits = solver.makeIntVar(waveSizeLB, waveSizeUB, "total_units");
-
-        MPVariable[] orderUnitSum = new MPVariable[nOrders];
-        for (int o = 0; o < nOrders; o++) {
-            int sum = orders.get(o).values().stream().mapToInt(Integer::intValue).sum();
-            orderUnitSum[o] = solver.makeIntVar(0, waveSizeUB, "units_o_" + o);
-            MPConstraint c = solver.makeConstraint(0.0, 0.0, "link_units_o_" + o);
-            c.setCoefficient(orderUnitSum[o], 1.0);
-            c.setCoefficient(x[o], -sum);
+        // 3. Precomputar unidades totales por orden
+        int[] totalUnitsPerOrder = new int[numOrders];
+        for (int o = 0; o < numOrders; o++) {
+            totalUnitsPerOrder[o] =
+                orders.get(o).values().stream().mapToInt(Integer::intValue).sum();
         }
 
-        MPConstraint totalUnitsConstraint = solver.makeConstraint(0.0, 0.0, "total_units_def");
-        totalUnitsConstraint.setCoefficient(totalUnits, 1.0);
-        for (MPVariable v : orderUnitSum) {
-            totalUnitsConstraint.setCoefficient(v, -1.0);
-        }
-
+        // 4. Restricciones de disponibilidad por ítem
         for (int i = 0; i < nItems; i++) {
-            MPConstraint itemConstraint = solver.makeConstraint(0.0, Double.POSITIVE_INFINITY, "item_req_supply_" + i);
-            for (int o = 0; o < nOrders; o++) {
-                int units = orders.get(o).getOrDefault(i, 0);
-                if (units > 0) {
-                    itemConstraint.setCoefficient(x[o], units);
+            MPConstraint ct = solver.makeConstraint(0.0, MPSolver.infinity(), "item_" + i);
+            // suma de órdenes
+            for (int o = 0; o < numOrders; o++) {
+                Integer q = orders.get(o).get(i);
+                if (q != null && q > 0) {
+                    ct.setCoefficient(x[o], q);
                 }
             }
-            for (int a = 0; a < nAisles; a++) {
-                int capacity = aisles.get(a).getOrDefault(i, 0);
-                if (capacity > 0) {
-                    itemConstraint.setCoefficient(y[a], -capacity);
+            // menos suma de pasillos disponibles
+            for (int a = 0; a < numAisles; a++) {
+                Integer q = aisles.get(a).get(i);
+                if (q != null && q > 0) {
+                    ct.setCoefficient(y[a], -q);
                 }
             }
         }
 
-        double lambda = 0;
-        double epsilon = 1e-4;
-        double bestObj = 0;
-        Set<Integer> bestOrders = new HashSet<>();
-        Set<Integer> bestAisles = new HashSet<>();
+        // 5. Restricción de tamaño de oleada
+        MPConstraint waveCt =
+            solver.makeConstraint(waveSizeLB, waveSizeUB, "wave_size");
+        for (int o = 0; o < numOrders; o++) {
+            waveCt.setCoefficient(x[o], totalUnitsPerOrder[o]);
+        }
 
-        while (getRemainingTime(stopWatch) > 2) {
-            MPObjective objective = solver.objective();
-            objective.setMaximization();
-            objective.setCoefficient(totalUnits, 1.0);
-            for (int a = 0; a < nAisles; a++) {
-                objective.setCoefficient(y[a], -lambda);
-            }
+        // 6. Función objetivo aproximada: max totalUnits*bigM - numPasillos
+        //    (buscamos un buen equilibrio unidades/pasillo)
+        MPObjective obj = solver.objective();
+        int bigM = 1_000; // peso para priorizar unidades
+        for (int o = 0; o < numOrders; o++) {
+            obj.setCoefficient(x[o], totalUnitsPerOrder[o] * bigM);
+        }
+        for (int a = 0; a < numAisles; a++) {
+            obj.setCoefficient(y[a], -1.0);
+        }
+        obj.setMaximization();
 
-            solver.setTimeLimit((int)Math.min(getRemainingTime(stopWatch) * 1000, 10000));
-            final MPSolver.ResultStatus resultStatus = solver.solve();
+        // 7. Fijar límite de tiempo
+        solver.setTimeLimit(MAX_RUNTIME);
 
-            if (resultStatus == MPSolver.ResultStatus.OPTIMAL || resultStatus == MPSolver.ResultStatus.FEASIBLE) {
-                double units = totalUnits.solutionValue();
-                double aislesUsed = Arrays.stream(y).filter(var -> var.solutionValue() > 0.5).count();
-                double ratio = units / aislesUsed;
+        // 8. Ejecutar
+        ResultStatus status = solver.solve();
 
-                if (ratio - bestObj > epsilon) {
-                    bestObj = ratio;
-                    lambda = ratio;
-                    bestOrders.clear();
-                    bestAisles.clear();
-                    for (int o = 0; o < nOrders; o++) if (x[o].solutionValue() > 0.5) bestOrders.add(o);
-                    for (int a = 0; a < nAisles; a++) if (y[a].solutionValue() > 0.5) bestAisles.add(a);
-                } else {
-                    break;
+        // 9. Construir la solución
+        Set<Integer> selectedOrders = new HashSet<>();
+        Set<Integer> visitedAisles = new HashSet<>();
+        if (status == ResultStatus.OPTIMAL || status == ResultStatus.FEASIBLE) {
+            for (int o = 0; o < numOrders; o++) {
+                if (x[o].solutionValue() > 0.5) {
+                    selectedOrders.add(o);
                 }
-            } else {
-                break;
+            }
+            for (int a = 0; a < numAisles; a++) {
+                if (y[a].solutionValue() > 0.5) {
+                    visitedAisles.add(a);
+                }
             }
         }
 
-        return new ChallengeSolution(bestOrders, bestAisles);
+        return new ChallengeSolution(selectedOrders, visitedAisles);
     }
     protected long getRemainingTime(StopWatch stopWatch) {
         return Math.max(
