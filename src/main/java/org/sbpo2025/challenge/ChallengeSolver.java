@@ -1,5 +1,5 @@
 package org.sbpo2025.challenge;
-
+import com.google.ortools.Loader;
 import org.apache.commons.lang3.time.StopWatch;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -24,7 +24,9 @@ public class ChallengeSolver {
     protected int nItems;
     protected int waveSizeLB;
     protected int waveSizeUB;
-
+    static {
+    Loader.loadNativeLibraries();
+    }
     public ChallengeSolver(
             List<Map<Integer, Integer>> orders, List<Map<Integer, Integer>> aisles, int nItems, int waveSizeLB, int waveSizeUB) {
         this.orders = orders;
