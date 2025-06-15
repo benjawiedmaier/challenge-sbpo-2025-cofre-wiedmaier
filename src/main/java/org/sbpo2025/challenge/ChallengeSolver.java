@@ -67,7 +67,7 @@ public class ChallengeSolver {
 
         // 4. Restricciones de disponibilidad por ítem
         for (int i = 0; i < nItems; i++) {
-            MPConstraint ct = solver.makeConstraint(-PSolver.infinity(), 0.0, "item_" + i);
+            MPConstraint ct = solver.makeConstraint(-MPSolver.infinity(), 0.0, "item_" + i);
             // suma de órdenes
             for (int o = 0; o < numOrders; o++) {
                 Integer q = orders.get(o).get(i);
