@@ -40,7 +40,7 @@ public class ChallengeSolver {
 
     public ChallengeSolution solve(StopWatch stopWatch) {
         // 1. Crear el solver MIP (CBC)
-        MPSolver solver = MPSolver.createSolver("CBC_MIXED_INTEGER_PROGRAMMING");
+        MPSolver solver = MPSolver.createSolver("CBC_MIXED_INTEGER_PROGRAMMING"); // SCIP_MIXED_INTEGER_PROGRAMMING 
         if (solver == null) {
             throw new IllegalStateException("No se pudo crear el solver CBC");
         }
