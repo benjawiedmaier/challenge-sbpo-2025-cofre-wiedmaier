@@ -45,18 +45,20 @@ public class ChallengeSolver {
     }
 
     public ChallengeSolution solve(StopWatch stopWatch) {
-        // 2. Crea el modelo CP-SAT
-        CpModel model = new CpModel();
+        // 1. Carga de librerías nativas de OR-Tools
+        Loader.loadNativeLibraries();
 
+        // 2. Construcción del modelo CP-SAT
+        CpModel model = new CpModel();
         int numOrders = orders.size();
         int numAisles = aisles.size();
 
         // 3. Variables booleanas
         BoolVar[] x = new BoolVar[numOrders];
-        BoolVar[] y = new BoolVar[numAisles];
         for (int o = 0; o < numOrders; o++) {
             x[o] = model.newBoolVar("x_o_" + o);
         }
+        BoolVar[] y = new BoolVar[numAisles];
         for (int a = 0; a < numAisles; a++) {
             y[a] = model.newBoolVar("y_a_" + a);
         }
@@ -68,53 +70,61 @@ public class ChallengeSolver {
                 orders.get(o).values().stream().mapToInt(Integer::intValue).sum();
         }
 
-        // 5. Restricción de tamaño de la oleada
+        // 5. Restricción de tamaño de oleada: waveSizeLB ≤ sum(unidades·x) ≤ waveSizeUB
         {
-            LinearExpr.Builder waveExpr = LinearExpr.newBuilder();
+            List<LinearExpr> terms = new ArrayList<>();
             for (int o = 0; o < numOrders; o++) {
-                waveExpr.addTerm(x[o], totalUnitsPerOrder[o]);
+                if (totalUnitsPerOrder[o] > 0) {
+                    terms.add(LinearExpr.term(x[o], totalUnitsPerOrder[o]));
+                }
             }
+            LinearExpr waveExpr = LinearExpr.sum(terms.toArray(new LinearExpr[0]));
             model.addLinearConstraint(waveExpr, waveSizeLB, waveSizeUB);
         }
 
         // 6. Restricciones de disponibilidad por ítem: demand ≤ supply
         for (int i = 0; i < nItems; i++) {
-            LinearExpr.Builder demand = LinearExpr.newBuilder();
-            LinearExpr.Builder supply = LinearExpr.newBuilder();
+            List<LinearExpr> demandTerms = new ArrayList<>();
+            List<LinearExpr> supplyTerms = new ArrayList<>();
             for (int o = 0; o < numOrders; o++) {
                 Integer q = orders.get(o).get(i);
                 if (q != null && q > 0) {
-                    demand.addTerm(x[o], q);
+                    demandTerms.add(LinearExpr.term(x[o], q));
                 }
             }
             for (int a = 0; a < numAisles; a++) {
                 Integer q = aisles.get(a).get(i);
                 if (q != null && q > 0) {
-                    supply.addTerm(y[a], q);
+                    supplyTerms.add(LinearExpr.term(y[a], q));
                 }
             }
-            model.addLessOrEqual(demand, supply);
+            LinearExpr demandExpr = LinearExpr.sum(demandTerms.toArray(new LinearExpr[0]));
+            LinearExpr supplyExpr = LinearExpr.sum(supplyTerms.toArray(new LinearExpr[0]));
+            model.addLessOrEqual(demandExpr, supplyExpr);
         }
 
-        // 7. Función objetivo: max bigM·(unidades recogidas) – (nº pasillos)
+        // 7. Función objetivo: maximizar bigM·sum(unidades·x) – sum(y)
         {
-            LinearExpr.Builder obj = LinearExpr.newBuilder();
+            List<LinearExpr> objTerms = new ArrayList<>();
             int bigM = 1_000;
             for (int o = 0; o < numOrders; o++) {
-                obj.addTerm(x[o], totalUnitsPerOrder[o] * bigM);
+                if (totalUnitsPerOrder[o] > 0) {
+                    objTerms.add(LinearExpr.term(x[o], totalUnitsPerOrder[o] * bigM));
+                }
             }
             for (int a = 0; a < numAisles; a++) {
-                obj.addTerm(y[a], -1);
+                objTerms.add(LinearExpr.term(y[a], -1));
             }
-            model.maximize(obj);
+            LinearExpr objective = LinearExpr.sum(objTerms.toArray(new LinearExpr[0]));
+            model.maximize(objective);
         }
 
-        // 8. Resolver con límite de tiempo
+        // 8. Resolución con límite de tiempo (en segundos)
         CpSolver solver = new CpSolver();
         solver.getParameters().setMaxTimeInSeconds(MAX_RUNTIME / 1000.0);
         CpSolverStatus status = solver.solve(model);
 
-        // 9. Extraer la solución
+        // 9. Extracción de la solución
         Set<Integer> selectedOrders = new HashSet<>();
         Set<Integer> visitedAisles = new HashSet<>();
         if (status == CpSolverStatus.OPTIMAL || status == CpSolverStatus.FEASIBLE) {
