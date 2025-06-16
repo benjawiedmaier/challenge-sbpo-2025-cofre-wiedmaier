@@ -124,7 +124,7 @@ public class ChallengeSolver {
         CpSolver solver = new CpSolver();
         solver.getParameters().setMaxTimeInSeconds(590);
         solver.getParameters().setRandomSeed(42); // Fijar semilla para reproducibilidad
-        solver.getParameters().setNumSearchWorkers(1);
+        solver.getParameters().setNumSearchWorkers(8);
         
         CpSolverStatus status = solver.solve(model);
 
