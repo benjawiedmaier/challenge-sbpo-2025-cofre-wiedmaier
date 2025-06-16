@@ -122,7 +122,7 @@ public class ChallengeSolver {
 
         // 8. Resolución con límite de tiempo (en segundos)
         CpSolver solver = new CpSolver();
-        solver.getParameters().setMaxTimeInSeconds(MAX_RUNTIME / 1000.0);
+        solver.getParameters().setMaxTimeInSeconds(590);
         solver.getParameters().setRandomSeed(42); // Fijar semilla para reproducibilidad
         solver.getParameters().setNumSearchWorkers(1);
         
