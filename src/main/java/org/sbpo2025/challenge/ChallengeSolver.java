@@ -45,100 +45,88 @@ public class ChallengeSolver {
     }
 
     public ChallengeSolution solve(StopWatch stopWatch) {
-        // 1. Carga de librerías nativas de OR-Tools
-        Loader.loadNativeLibraries();
-
-        // 2. Construcción del modelo CP-SAT
-        CpModel model = new CpModel();
+        public ChallengeSolution solve(StopWatch stopWatch) {
+        // 1. Crear el solver MIP (CBC)
+        MPSolver solver = MPSolver.createSolver("CBC_MIXED_INTEGER_PROGRAMMING"); // SCIP_MIXED_INTEGER_PROGRAMMING 
+        if (solver == null) {
+            throw new IllegalStateException("No se pudo crear el solver CBC");
+        }
 
         int numOrders = orders.size();
         int numAisles = aisles.size();
 
-        // 3. Variables booleanas
-        BoolVar[] x = new BoolVar[numOrders];
+        // 2. Variables binarias
+        MPVariable[] x = new MPVariable[numOrders];      // x[o] = 1 si tomo la orden o
+        MPVariable[] y = new MPVariable[numAisles];      // y[a] = 1 si visito el pasillo a
         for (int o = 0; o < numOrders; o++) {
-            x[o] = model.newBoolVar("x_o_" + o);
+            x[o] = solver.makeBoolVar("x_o_" + o);
         }
-        BoolVar[] y = new BoolVar[numAisles];
         for (int a = 0; a < numAisles; a++) {
-            y[a] = model.newBoolVar("y_a_" + a);
+            y[a] = solver.makeBoolVar("y_a_" + a);
         }
 
-        // 4. Precomputar unidades totales por orden
+        // 3. Precomputar unidades totales por orden
         int[] totalUnitsPerOrder = new int[numOrders];
         for (int o = 0; o < numOrders; o++) {
             totalUnitsPerOrder[o] =
                 orders.get(o).values().stream().mapToInt(Integer::intValue).sum();
         }
 
-        // 5. Restricción de tamaño de oleada: waveSizeLB ≤ sum(unidades·x) ≤ waveSizeUB
-        {
-            List<LinearExpr> terms = new ArrayList<>();
-            for (int o = 0; o < numOrders; o++) {
-                if (totalUnitsPerOrder[o] > 0) {
-                    terms.add(LinearExpr.term(x[o], totalUnitsPerOrder[o]));
-                }
-            }
-            LinearExpr waveExpr = LinearExpr.sum(terms.toArray(new LinearExpr[0]));
-            model.addLinearConstraint(waveExpr, waveSizeLB, waveSizeUB);
-        }
-
-        // 6. Restricciones de disponibilidad por ítem: demand ≤ supply
+        // 4. Restricciones de disponibilidad por ítem
         for (int i = 0; i < nItems; i++) {
-            List<LinearExpr> demandTerms = new ArrayList<>();
-            List<LinearExpr> supplyTerms = new ArrayList<>();
+            MPConstraint ct = solver.makeConstraint(-MPSolver.infinity(), 0.0, "item_" + i);
+            // suma de órdenes
             for (int o = 0; o < numOrders; o++) {
                 Integer q = orders.get(o).get(i);
                 if (q != null && q > 0) {
-                    demandTerms.add(LinearExpr.term(x[o], q));
+                    ct.setCoefficient(x[o], q);
                 }
             }
+            // menos suma de pasillos disponibles
             for (int a = 0; a < numAisles; a++) {
                 Integer q = aisles.get(a).get(i);
                 if (q != null && q > 0) {
-                    supplyTerms.add(LinearExpr.term(y[a], q));
+                    ct.setCoefficient(y[a], -q);
                 }
             }
-            LinearExpr demandExpr = LinearExpr.sum(demandTerms.toArray(new LinearExpr[0]));
-            LinearExpr supplyExpr = LinearExpr.sum(supplyTerms.toArray(new LinearExpr[0]));
-            model.addLessOrEqual(demandExpr, supplyExpr);
         }
 
-        // 7. Función objetivo: maximizar bigM·sum(unidades·x) – sum(y)
-        {
-            List<LinearExpr> objTerms = new ArrayList<>();
-            int bigM = 1_000;
-            for (int o = 0; o < numOrders; o++) {
-                if (totalUnitsPerOrder[o] > 0) {
-                    objTerms.add(LinearExpr.term(x[o], totalUnitsPerOrder[o] * bigM));
-                }
-            }
-            for (int a = 0; a < numAisles; a++) {
-                objTerms.add(LinearExpr.term(y[a], -1));
-            }
-            LinearExpr objective = LinearExpr.sum(objTerms.toArray(new LinearExpr[0]));
-            model.maximize(objective);
+        // 5. Restricción de tamaño de oleada
+        MPConstraint waveCt =
+            solver.makeConstraint(waveSizeLB, waveSizeUB, "wave_size");
+        for (int o = 0; o < numOrders; o++) {
+            waveCt.setCoefficient(x[o], totalUnitsPerOrder[o]);
         }
 
-        // 8. Resolución con límite de tiempo (en segundos)
-        CpSolver solver = new CpSolver();
-        solver.getParameters().setMaxTimeInSeconds(590);
-        solver.getParameters().setRandomSeed(42); // Fijar semilla para reproducibilidad
-        solver.getParameters().setNumSearchWorkers(8);
-        
-        CpSolverStatus status = solver.solve(model);
+        // 6. Función objetivo aproximada: max totalUnits*bigM - numPasillos
+        //    (buscamos un buen equilibrio unidades/pasillo)
+        MPObjective obj = solver.objective();
+        int bigM = 1_000; // peso para priorizar unidades
+        for (int o = 0; o < numOrders; o++) {
+            obj.setCoefficient(x[o], totalUnitsPerOrder[o] * bigM);
+        }
+        for (int a = 0; a < numAisles; a++) {
+            obj.setCoefficient(y[a], -1.0);
+        }
+        obj.setMaximization();
 
-        // 9. Extracción de la solución
+        // 7. Fijar límite de tiempo
+        solver.setTimeLimit(MAX_RUNTIME - 500);
+
+        // 8. Ejecutar
+        ResultStatus status = solver.solve();
+
+        // 9. Construir la solución
         Set<Integer> selectedOrders = new HashSet<>();
         Set<Integer> visitedAisles = new HashSet<>();
-        if (status == CpSolverStatus.OPTIMAL || status == CpSolverStatus.FEASIBLE) {
+        if (status == ResultStatus.OPTIMAL || status == ResultStatus.FEASIBLE) {
             for (int o = 0; o < numOrders; o++) {
-                if (solver.booleanValue(x[o])) {
+                if (x[o].solutionValue() > 0.5) {
                     selectedOrders.add(o);
                 }
             }
             for (int a = 0; a < numAisles; a++) {
-                if (solver.booleanValue(y[a])) {
+                if (y[a].solutionValue() > 0.5) {
                     visitedAisles.add(a);
                 }
             }
