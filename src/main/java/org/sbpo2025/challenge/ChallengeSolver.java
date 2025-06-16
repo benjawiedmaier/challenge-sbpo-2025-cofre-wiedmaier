@@ -17,12 +17,6 @@ import com.google.ortools.linearsolver.MPVariable;
 import com.google.ortools.linearsolver.MPConstraint;
 import com.google.ortools.linearsolver.MPObjective;
 
-// import com.google.ortools.sat.CpModel;
-import com.google.ortools.sat.CpModel;
-import com.google.ortools.sat.CpSolver;
-import com.google.ortools.sat.CpSolverStatus;
-import com.google.ortools.sat.BoolVar;
-import com.google.ortools.sat.LinearExpr;
 
 public class ChallengeSolver {
     private final long MAX_RUNTIME = 600000; // milliseconds; 10 minutes
@@ -45,7 +39,6 @@ public class ChallengeSolver {
     }
 
     public ChallengeSolution solve(StopWatch stopWatch) {
-        public ChallengeSolution solve(StopWatch stopWatch) {
         // 1. Crear el solver MIP (CBC)
         MPSolver solver = MPSolver.createSolver("CBC_MIXED_INTEGER_PROGRAMMING"); // SCIP_MIXED_INTEGER_PROGRAMMING 
         if (solver == null) {
@@ -111,7 +104,7 @@ public class ChallengeSolver {
         obj.setMaximization();
 
         // 7. Fijar límite de tiempo
-        solver.setTimeLimit(MAX_RUNTIME - 500);
+        solver.setTimeLimit(MAX_RUNTIME);
 
         // 8. Ejecutar
         ResultStatus status = solver.solve();
