@@ -50,10 +50,6 @@ public class ChallengeSolver {
 
         // 2. Construcción del modelo CP-SAT
         CpModel model = new CpModel();
-        solver.getParameters().setRandomSeed(42); // Fijar semilla para reproducibilidad
-        solver.getParameters().setNumSearchWorkers(1);
-        
-
 
         int numOrders = orders.size();
         int numAisles = aisles.size();
@@ -127,6 +123,9 @@ public class ChallengeSolver {
         // 8. Resolución con límite de tiempo (en segundos)
         CpSolver solver = new CpSolver();
         solver.getParameters().setMaxTimeInSeconds(MAX_RUNTIME / 1000.0);
+        solver.getParameters().setRandomSeed(42); // Fijar semilla para reproducibilidad
+        solver.getParameters().setNumSearchWorkers(1);
+        
         CpSolverStatus status = solver.solve(model);
 
         // 9. Extracción de la solución
