@@ -17,6 +17,12 @@ import com.google.ortools.linearsolver.MPVariable;
 import com.google.ortools.linearsolver.MPConstraint;
 import com.google.ortools.linearsolver.MPObjective;
 
+// import com.google.ortools.sat.CpModel;
+import com.google.ortools.sat.CpModel;
+import com.google.ortools.sat.CpSolver;
+import com.google.ortools.sat.CpSolverStatus;
+import com.google.ortools.sat.BoolVar;
+import com.google.ortools.sat.LinearExpr;
 
 public class ChallengeSolver {
     private final long MAX_RUNTIME = 600000; // milliseconds; 10 minutes
@@ -39,87 +45,86 @@ public class ChallengeSolver {
     }
 
     public ChallengeSolution solve(StopWatch stopWatch) {
-        // 1. Crear el solver MIP (CBC)
-        MPSolver solver = MPSolver.createSolver("CBC_MIXED_INTEGER_PROGRAMMING"); // SCIP_MIXED_INTEGER_PROGRAMMING 
-        if (solver == null) {
-            throw new IllegalStateException("No se pudo crear el solver CBC");
-        }
+        // 2. Crea el modelo CP-SAT
+        CpModel model = new CpModel();
 
         int numOrders = orders.size();
         int numAisles = aisles.size();
 
-        // 2. Variables binarias
-        MPVariable[] x = new MPVariable[numOrders];      // x[o] = 1 si tomo la orden o
-        MPVariable[] y = new MPVariable[numAisles];      // y[a] = 1 si visito el pasillo a
+        // 3. Variables booleanas
+        BoolVar[] x = new BoolVar[numOrders];
+        BoolVar[] y = new BoolVar[numAisles];
         for (int o = 0; o < numOrders; o++) {
-            x[o] = solver.makeBoolVar("x_o_" + o);
+            x[o] = model.newBoolVar("x_o_" + o);
         }
         for (int a = 0; a < numAisles; a++) {
-            y[a] = solver.makeBoolVar("y_a_" + a);
+            y[a] = model.newBoolVar("y_a_" + a);
         }
 
-        // 3. Precomputar unidades totales por orden
+        // 4. Precomputar unidades totales por orden
         int[] totalUnitsPerOrder = new int[numOrders];
         for (int o = 0; o < numOrders; o++) {
             totalUnitsPerOrder[o] =
                 orders.get(o).values().stream().mapToInt(Integer::intValue).sum();
         }
 
-        // 4. Restricciones de disponibilidad por ítem
+        // 5. Restricción de tamaño de la oleada
+        {
+            LinearExpr.Builder waveExpr = LinearExpr.newBuilder();
+            for (int o = 0; o < numOrders; o++) {
+                waveExpr.addTerm(x[o], totalUnitsPerOrder[o]);
+            }
+            model.addLinearConstraint(waveExpr, waveSizeLB, waveSizeUB);
+        }
+
+        // 6. Restricciones de disponibilidad por ítem: demand ≤ supply
         for (int i = 0; i < nItems; i++) {
-            MPConstraint ct = solver.makeConstraint(-MPSolver.infinity(), 0.0, "item_" + i);
-            // suma de órdenes
+            LinearExpr.Builder demand = LinearExpr.newBuilder();
+            LinearExpr.Builder supply = LinearExpr.newBuilder();
             for (int o = 0; o < numOrders; o++) {
                 Integer q = orders.get(o).get(i);
                 if (q != null && q > 0) {
-                    ct.setCoefficient(x[o], q);
+                    demand.addTerm(x[o], q);
                 }
             }
-            // menos suma de pasillos disponibles
             for (int a = 0; a < numAisles; a++) {
                 Integer q = aisles.get(a).get(i);
                 if (q != null && q > 0) {
-                    ct.setCoefficient(y[a], -q);
+                    supply.addTerm(y[a], q);
                 }
             }
+            model.addLessOrEqual(demand, supply);
         }
 
-        // 5. Restricción de tamaño de oleada
-        MPConstraint waveCt =
-            solver.makeConstraint(waveSizeLB, waveSizeUB, "wave_size");
-        for (int o = 0; o < numOrders; o++) {
-            waveCt.setCoefficient(x[o], totalUnitsPerOrder[o]);
+        // 7. Función objetivo: max bigM·(unidades recogidas) – (nº pasillos)
+        {
+            LinearExpr.Builder obj = LinearExpr.newBuilder();
+            int bigM = 1_000;
+            for (int o = 0; o < numOrders; o++) {
+                obj.addTerm(x[o], totalUnitsPerOrder[o] * bigM);
+            }
+            for (int a = 0; a < numAisles; a++) {
+                obj.addTerm(y[a], -1);
+            }
+            model.maximize(obj);
         }
 
-        // 6. Función objetivo aproximada: max totalUnits*bigM - numPasillos
-        //    (buscamos un buen equilibrio unidades/pasillo)
-        MPObjective obj = solver.objective();
-        int bigM = 1_000; // peso para priorizar unidades
-        for (int o = 0; o < numOrders; o++) {
-            obj.setCoefficient(x[o], totalUnitsPerOrder[o] * bigM);
-        }
-        for (int a = 0; a < numAisles; a++) {
-            obj.setCoefficient(y[a], -1.0);
-        }
-        obj.setMaximization();
+        // 8. Resolver con límite de tiempo
+        CpSolver solver = new CpSolver();
+        solver.getParameters().setMaxTimeInSeconds(MAX_RUNTIME / 1000.0);
+        CpSolverStatus status = solver.solve(model);
 
-        // 7. Fijar límite de tiempo
-        solver.setTimeLimit(MAX_RUNTIME);
-
-        // 8. Ejecutar
-        ResultStatus status = solver.solve();
-
-        // 9. Construir la solución
+        // 9. Extraer la solución
         Set<Integer> selectedOrders = new HashSet<>();
         Set<Integer> visitedAisles = new HashSet<>();
-        if (status == ResultStatus.OPTIMAL || status == ResultStatus.FEASIBLE) {
+        if (status == CpSolverStatus.OPTIMAL || status == CpSolverStatus.FEASIBLE) {
             for (int o = 0; o < numOrders; o++) {
-                if (x[o].solutionValue() > 0.5) {
+                if (solver.booleanValue(x[o])) {
                     selectedOrders.add(o);
                 }
             }
             for (int a = 0; a < numAisles; a++) {
-                if (y[a].solutionValue() > 0.5) {
+                if (solver.booleanValue(y[a])) {
                     visitedAisles.add(a);
                 }
             }
