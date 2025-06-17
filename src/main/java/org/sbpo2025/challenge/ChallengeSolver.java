@@ -105,7 +105,7 @@ public class ChallengeSolver {
 
         // 7. Fijar límite de tiempo
         solver.setTimeLimit(599000); 
-        solver.setNumThreads(Runtime.getRuntime().availableProcessors());
+        //solver.setNumThreads(Runtime.getRuntime().availableProcessors());
 
         // 8. Ejecutar
         ResultStatus status = solver.solve();
