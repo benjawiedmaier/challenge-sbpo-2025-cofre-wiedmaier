@@ -94,7 +94,7 @@ public class ChallengeSolver {
         // 6. Función objetivo aproximada: max totalUnits*bigM - numPasillos
         //    (buscamos un buen equilibrio unidades/pasillo)
         MPObjective obj = solver.objective();
-        int bigM = 1_000; // peso para priorizar unidades
+        int bigM = 1_500; // peso para priorizar unidades
         for (int o = 0; o < numOrders; o++) {
             obj.setCoefficient(x[o], totalUnitsPerOrder[o] * bigM);
         }
