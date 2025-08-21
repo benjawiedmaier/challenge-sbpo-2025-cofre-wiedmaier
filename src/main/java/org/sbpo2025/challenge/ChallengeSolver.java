@@ -1,5 +1,5 @@
 package org.sbpo2025.challenge;
-import com.google.ortools.Loader;
+// import com.google.ortools.Loader;
 import org.apache.commons.lang3.time.StopWatch;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -11,11 +11,13 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.*;
 
-import com.google.ortools.linearsolver.MPSolver;
-import com.google.ortools.linearsolver.MPSolver.ResultStatus;
-import com.google.ortools.linearsolver.MPVariable;
-import com.google.ortools.linearsolver.MPConstraint;
-import com.google.ortools.linearsolver.MPObjective;
+// import com.google.ortools.linearsolver.MPSolver;
+// import com.google.ortools.linearsolver.MPSolver.ResultStatus;
+// import com.google.ortools.linearsolver.MPVariable;
+// import com.google.ortools.linearsolver.MPConstraint;
+// import com.google.ortools.linearsolver.MPObjective;
+import ilog.concert.*;
+import ilog.cplex.IloCplex;
 
 
 public class ChallengeSolver {
@@ -39,94 +41,95 @@ public class ChallengeSolver {
     }
 
     public ChallengeSolution solve(StopWatch stopWatch) {
-        // 1. Crear el solver MIP (CBC)
-        MPSolver solver = MPSolver.createSolver("CBC_MIXED_INTEGER_PROGRAMMING"); // SCIP_MIXED_INTEGER_PROGRAMMING 
-        if (solver == null) {
-            throw new IllegalStateException("No se pudo crear el solver CBC");
-        }
+        try {
+            // 1. Crear instancia de CPLEX
+            IloCplex cplex = new IloCplex();
+            cplex.setParam(IloCplex.Param.TimeLimit, 599.0);                   // tiempo en segundos
+            cplex.setParam(IloCplex.Param.Threads, Runtime.getRuntime().availableProcessors());
 
-        int numOrders = orders.size();
-        int numAisles = aisles.size();
+            int numOrders = orders.size();
+            int numAisles = aisles.size();
 
-        // 2. Variables binarias
-        MPVariable[] x = new MPVariable[numOrders];      // x[o] = 1 si tomo la orden o
-        MPVariable[] y = new MPVariable[numAisles];      // y[a] = 1 si visito el pasillo a
-        for (int o = 0; o < numOrders; o++) {
-            x[o] = solver.makeBoolVar("x_o_" + o);
-        }
-        for (int a = 0; a < numAisles; a++) {
-            y[a] = solver.makeBoolVar("y_a_" + a);
-        }
+            // 2. Variables binarias
+            IloNumVar[] x = cplex.boolVarArray(numOrders);     // x[o] = 1 si tomo la orden o
+            IloNumVar[] y = cplex.boolVarArray(numAisles);     // y[a] = 1 si visito el pasillo a
 
-        // 3. Precomputar unidades totales por orden
-        int[] totalUnitsPerOrder = new int[numOrders];
-        for (int o = 0; o < numOrders; o++) {
-            totalUnitsPerOrder[o] =
-                orders.get(o).values().stream().mapToInt(Integer::intValue).sum();
-        }
+            // 2.1 Restricción: como máximo 20 pasillos
+            // IloLinearNumExpr aisleCountExpr = cplex.linearNumExpr();
+            // for (int a = 0; a < numAisles; a++) {
+            //     aisleCountExpr.addTerm(1.0, y[a]);
+            // }
+            // cplex.addLe(aisleCountExpr, 20, "max_aisles");
 
-        // 4. Restricciones de disponibilidad por ítem
-        for (int i = 0; i < nItems; i++) {
-            MPConstraint ct = solver.makeConstraint(-MPSolver.infinity(), 0.0, "item_" + i);
-            // suma de órdenes
+            // 3. Precomputar unidades totales por orden
+            int[] totalUnitsPerOrder = new int[numOrders];
             for (int o = 0; o < numOrders; o++) {
-                Integer q = orders.get(o).get(i);
-                if (q != null && q > 0) {
-                    ct.setCoefficient(x[o], q);
-                }
+                totalUnitsPerOrder[o] =
+                    orders.get(o).values().stream().mapToInt(Integer::intValue).sum();
             }
-            // menos suma de pasillos disponibles
-            for (int a = 0; a < numAisles; a++) {
-                Integer q = aisles.get(a).get(i);
-                if (q != null && q > 0) {
-                    ct.setCoefficient(y[a], -q);
+
+            // 4. Restricciones de disponibilidad por ítem
+            for (int i = 0; i < nItems; i++) {
+                IloLinearNumExpr expr = cplex.linearNumExpr();
+                // suma de pedidos
+                for (int o = 0; o < numOrders; o++) {
+                    Integer q = orders.get(o).get(i);
+                    if (q != null && q > 0) {
+                        expr.addTerm(q, x[o]);
+                    }
                 }
+                // menos sumatoria de pasillos
+                for (int a = 0; a < numAisles; a++) {
+                    Integer q = aisles.get(a).get(i);
+                    if (q != null && q > 0) {
+                        expr.addTerm(-q, y[a]);
+                    }
+                }
+                cplex.addLe(expr, 0.0, "item_" + i);
             }
-        }
 
-        // 5. Restricción de tamaño de oleada
-        MPConstraint waveCt =
-            solver.makeConstraint(waveSizeLB, waveSizeUB, "wave_size");
-        for (int o = 0; o < numOrders; o++) {
-            waveCt.setCoefficient(x[o], totalUnitsPerOrder[o]);
-        }
-
-        // 6. Función objetivo aproximada: max totalUnits*bigM - numPasillos
-        //    (buscamos un buen equilibrio unidades/pasillo)
-        MPObjective obj = solver.objective();
-        int bigM = 1_500; // peso para priorizar unidades
-        for (int o = 0; o < numOrders; o++) {
-            obj.setCoefficient(x[o], totalUnitsPerOrder[o] * bigM);
-        }
-        for (int a = 0; a < numAisles; a++) {
-            obj.setCoefficient(y[a], -1.0);
-        }
-        obj.setMaximization();
-
-        // 7. Fijar límite de tiempo
-        solver.setTimeLimit(599000); 
-        solver.setSolverSpecificParametersAsString("threads=8\n");
-
-        // 8. Ejecutar
-        ResultStatus status = solver.solve();
-
-        // 9. Construir la solución
-        Set<Integer> selectedOrders = new HashSet<>();
-        Set<Integer> visitedAisles = new HashSet<>();
-        if (status == ResultStatus.OPTIMAL || status == ResultStatus.FEASIBLE) {
+            // 5. Restricción de tamaño de oleada
+            IloLinearNumExpr waveExpr = cplex.linearNumExpr();
             for (int o = 0; o < numOrders; o++) {
-                if (x[o].solutionValue() > 0.5) {
-                    selectedOrders.add(o);
-                }
+                waveExpr.addTerm(totalUnitsPerOrder[o], x[o]);
+            }
+            cplex.addRange(waveSizeLB, waveExpr, waveSizeUB, "wave_size");
+
+            // 6. Objetivo: maximizar totalUnits*bigM - numPasillos
+            IloLinearNumExpr objExpr = cplex.linearNumExpr();
+            int bigM = 1_500;
+            for (int o = 0; o < numOrders; o++) {
+                objExpr.addTerm(totalUnitsPerOrder[o] * bigM, x[o]);
             }
             for (int a = 0; a < numAisles; a++) {
-                if (y[a].solutionValue() > 0.5) {
-                    visitedAisles.add(a);
-                }
+                objExpr.addTerm(-1.0, y[a]);
             }
-        }
+            cplex.addMaximize(objExpr);
 
-        return new ChallengeSolution(selectedOrders, visitedAisles);
+            // 7. Resolver
+            if (cplex.solve()) {
+                Set<Integer> selectedOrders = new HashSet<>();
+                Set<Integer> visitedAisles = new HashSet<>();
+                for (int o = 0; o < numOrders; o++) {
+                    if (cplex.getValue(x[o]) > 0.5) {
+                        selectedOrders.add(o);
+                    }
+                }
+                for (int a = 0; a < numAisles; a++) {
+                    if (cplex.getValue(y[a]) > 0.5) {
+                        visitedAisles.add(a);
+                    }
+                }
+                cplex.end();
+                return new ChallengeSolution(selectedOrders, visitedAisles);
+            } else {
+                cplex.end();
+                // Ninguna solución factible encontrada
+                return new ChallengeSolution(Collections.emptySet(), Collections.emptySet());
+            }
+        } catch (IloException e) {
+            throw new RuntimeException("Error en CPLEX: " + e.getMessage(), e);
+        }
     }
     protected long getRemainingTime(StopWatch stopWatch) {
         return Math.max(
