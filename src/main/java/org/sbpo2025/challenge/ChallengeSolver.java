@@ -2,6 +2,9 @@ package org.sbpo2025.challenge;
 
 import org.apache.commons.lang3.time.StopWatch;
 import java.util.*;
+import java.util.concurrent.Future;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import ilog.concert.*;
 import ilog.cplex.IloCplex;
@@ -177,6 +180,12 @@ public class ChallengeSolver {
         /* 1) waveSizeLB ≤ Σ u_o x_o ≤ waveSizeUB */
         IloLinearNumExpr totU = cplex.linearNumExpr();
         for (int o = 0; o < numOrders; o++) totU.addTerm(unitsPerOrder[o], x[o]);
+        if (numOrders > 500) {
+            IloLinearNumExpr numSelectedOrders = cplex.linearNumExpr();
+            for (int o = 0; o < numOrders; o++) numSelectedOrders.addTerm(1.0, x[o]);
+            double upperBound = Math.min(numOrders - 1, ((waveSizeUB + waveSizeLB) / 2.0) + (numAisles / 4.0));
+            cplex.addLe(numSelectedOrders, upperBound);
+        }
         cplex.addGe(totU, waveSizeLB);
         cplex.addLe(totU, waveSizeUB);
 
